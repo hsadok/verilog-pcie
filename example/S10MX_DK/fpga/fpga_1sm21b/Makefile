@@ -1,7 +1,7 @@
 
 # FPGA settings
 FPGA_TOP = fpga
-FPGA_FAMILY = "Stratix 10 MX"
+FPGA_FAMILY = "Stratix 10"
 FPGA_DEVICE = 1SM21BHU2F53E1VG
 
 # Files for synthesis
