@@ -27,6 +27,8 @@
 #include <linux/version.h>
 #include <linux/delay.h>
 
+#include <asm/tsc.h>
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0)
 #include <linux/pci-aspm.h>
 #endif
@@ -421,7 +423,31 @@ static int edev_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	iowrite32(0x11223344, edev->bar[2]);
 
 	dev_info(dev, "read from BAR2");
-	dev_info(dev, "%08x", ioread32(edev->bar[2]));
+	// fence
+	mb();
+	// Get tsc clock:
+	int ts = rdtsc();
+	int val = ioread32(edev->bar[2]);
+	ts = rdtsc() - ts;
+	mb();
+	dev_info(dev, "%08x", val);
+	dev_info(dev, "TSC clock delta: %d", ts);
+	
+	// Test latency for many reads
+	int nb_reads;
+	for (nb_reads = 1; nb_reads < 100000; nb_reads *= 10) {
+		dev_info(dev, "test latency for %d reads", nb_reads);
+
+		mb();
+		ts = rdtsc();
+		for (k = 0; k < nb_reads; k++) {
+			ioread32(edev->bar[2] + k * 4);
+		}
+		ts = rdtsc() - ts;
+		mb();
+
+		dev_info(dev, "Mean latency for %d reads: %d", nb_reads, ts / nb_reads);
+	}
 
 	// PCIe DMA test
 	dev_info(dev, "write test data");
@@ -448,7 +474,7 @@ static int edev_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	iowrite32((edev->dma_region_addr + 0x0000) & 0xffffffff, edev->bar[0] + 0x000100);
 	iowrite32(((edev->dma_region_addr + 0x0000) >> 32) & 0xffffffff, edev->bar[0] + 0x000104);
 	iowrite32(0x100, edev->bar[0] + 0x000108);
-	iowrite32(0, edev->bar[0] + 0x00010C);
+	iowrite32(0, edev->bar[0] + 0x00010C);  // This seems unnecessary, it will be ignored by the hardware.
 	iowrite32(0x100, edev->bar[0] + 0x000110);
 	iowrite32(0xAA, edev->bar[0] + 0x000114);
 
@@ -709,6 +735,7 @@ static struct pci_driver pci_driver = {
 
 static int __init edev_init(void)
 {
+	printk(KERN_INFO DRIVER_NAME " driver version %s\n", DRIVER_VERSION);
 	return pci_register_driver(&pci_driver);
 }
 
