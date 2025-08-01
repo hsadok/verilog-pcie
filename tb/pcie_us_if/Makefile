@@ -42,7 +42,7 @@ VERILOG_SOURCES += ../../rtl/arbiter.v
 VERILOG_SOURCES += ../../rtl/priority_encoder.v
 
 # module parameters
-export PARAM_AXIS_PCIE_DATA_WIDTH := 64
+export PARAM_AXIS_PCIE_DATA_WIDTH := 512
 export PARAM_AXIS_PCIE_KEEP_WIDTH := $(shell expr $(PARAM_AXIS_PCIE_DATA_WIDTH) / 32 )
 export PARAM_AXIS_PCIE_RQ_USER_WIDTH := $(if $(filter-out 512,$(PARAM_AXIS_PCIE_DATA_WIDTH)),62,137)
 export PARAM_AXIS_PCIE_RC_USER_WIDTH := $(if $(filter-out 512,$(PARAM_AXIS_PCIE_DATA_WIDTH)),75,161)
