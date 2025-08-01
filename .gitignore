@@ -6,3 +6,5 @@
 **/tmp-clearbox/
 .dvt
 settings.json
+sim_build/
+results.xml
