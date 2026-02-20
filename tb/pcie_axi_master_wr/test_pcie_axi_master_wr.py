@@ -26,6 +26,7 @@ THE SOFTWARE.
 import itertools
 import logging
 import os
+import random
 import re
 import sys
 from contextlib import contextmanager
@@ -248,6 +249,431 @@ async def run_test_bad_ops(dut, idle_inserter=None, backpressure_inserter=None):
     await RisingEdge(dut.clk)
 
 
+async def run_test_write_aligned_no_extra_cycle(dut, idle_inserter=None, backpressure_inserter=None):
+    """Test that aligned writes don't waste extra cycles.
+
+    For an aligned write TLP, after the SOP beat is accepted, the module should
+    keep rx_req_tlp_ready HIGH for all subsequent data beats. If it drops ready
+    for even one cycle while the source has valid data, that is a wasted cycle.
+
+    Only run with no idle/backpressure (the _001 variant) to measure raw performance.
+    """
+    if idle_inserter is not None or backpressure_inserter is not None:
+        # This test only makes sense without idle/backpressure
+        return
+
+    tb = TB(dut)
+
+    byte_lanes = tb.axi_ram.byte_lanes
+
+    # No idle insertion or backpressure - we want to measure raw throughput
+    await tb.cycle_reset()
+
+    await tb.rc.enumerate()
+
+    dev = tb.rc.find_device(tb.dev.functions[0].pcie_id)
+    await dev.enable_device()
+
+    dev_bar0 = dev.bar_window[0]
+
+    for length in [byte_lanes * 2, byte_lanes * 4, 256]:
+        if length < byte_lanes * 2:
+            continue
+
+        pcie_addr = 0x1000  # aligned to bus width
+        test_data = bytearray([x % 256 for x in range(length)])
+
+        tb.axi_ram.write(pcie_addr - 128, b'\x55' * (len(test_data) + 256))
+
+        # Track stall cycles across ALL TLPs for this write operation
+        stall_info = {
+            'in_transfer': False,
+            'stall_cycles': 0,
+            'total_input_beats': 0,
+            'tlp_count': 0,
+            'done': False,
+        }
+
+        async def monitor_stalls():
+            while not stall_info['done']:
+                await RisingEdge(dut.clk)
+
+                tlp_valid = int(dut.rx_req_tlp_valid.value)
+                tlp_ready = int(dut.rx_req_tlp_ready.value)
+                tlp_sop = int(dut.rx_req_tlp_sop.value)
+                tlp_eop = int(dut.rx_req_tlp_eop.value)
+
+                if tlp_valid and tlp_ready and tlp_sop:
+                    stall_info['in_transfer'] = True
+                    stall_info['total_input_beats'] += 1
+                    if tlp_eop:
+                        stall_info['in_transfer'] = False
+                        stall_info['tlp_count'] += 1
+                elif stall_info['in_transfer']:
+                    if tlp_valid and tlp_ready:
+                        stall_info['total_input_beats'] += 1
+                        if tlp_eop:
+                            stall_info['in_transfer'] = False
+                            stall_info['tlp_count'] += 1
+                    elif tlp_valid and not tlp_ready:
+                        # Source has data but module isn't accepting it - stall!
+                        stall_info['stall_cycles'] += 1
+
+        monitor_task = cocotb.start_soon(monitor_stalls())
+
+        await dev_bar0.write(pcie_addr, test_data)
+        await Timer(length * 4 + 500, 'ns')
+
+        stall_info['done'] = True
+        await RisingEdge(dut.clk)
+
+        monitor_task.kill()
+
+        # Verify data correctness
+        assert tb.axi_ram.read(pcie_addr - 1, len(test_data) + 2) == b'\x55' + test_data + b'\x55'
+        assert not tb.status_error_uncor_asserted
+
+        tb.log.info("Aligned write %dB: %d TLPs, %d input beats, %d stall cycles",
+                     length, stall_info['tlp_count'], stall_info['total_input_beats'],
+                     stall_info['stall_cycles'])
+
+        # For aligned writes with no backpressure, there should be zero stall cycles
+        assert stall_info['stall_cycles'] == 0, \
+            f"Aligned write of {length}B had {stall_info['stall_cycles']} stall cycle(s) - module wastes cycles!"
+
+    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk)
+
+
+async def run_test_back_to_back_writes(dut, idle_inserter=None, backpressure_inserter=None):
+    """Test back-to-back write TLPs of various sizes.
+
+    Verifies that the write module handles rapid consecutive writes correctly,
+    ensuring the state machine correctly transitions from one TLP to the next.
+    """
+    tb = TB(dut)
+
+    byte_lanes = tb.axi_ram.byte_lanes
+
+    tb.set_idle_generator(idle_inserter)
+    tb.set_backpressure_generator(backpressure_inserter)
+
+    await tb.cycle_reset()
+
+    await tb.rc.enumerate()
+
+    dev = tb.rc.find_device(tb.dev.functions[0].pcie_id)
+    await dev.enable_device()
+
+    dev_bar0 = dev.bar_window[0]
+
+    # Issue multiple writes without waiting for completion
+    write_configs = [
+        (0x1000, 4),               # single DW (awlen==0 path)
+        (0x2000, byte_lanes),      # exactly one beat
+        (0x3000, byte_lanes * 2),  # two beats (multi-beat optimization)
+        (0x4000, byte_lanes * 4),  # four beats
+        (0x5000, 1),               # single byte
+        (0x6000, byte_lanes + 1),  # one beat + 1 byte overflow
+    ]
+
+    expected = {}
+    for pcie_addr, length in write_configs:
+        test_data = bytearray([(x + pcie_addr) % 256 for x in range(length)])
+        tb.axi_ram.write(pcie_addr - 128, b'\x55' * (length + 256))
+        expected[pcie_addr] = test_data
+        await dev_bar0.write(pcie_addr, test_data)
+
+    await Timer(3000, 'ns')
+
+    for pcie_addr, length in write_configs:
+        test_data = expected[pcie_addr]
+        tb.log.info("Verifying back-to-back write: addr=0x%04x, len=%d", pcie_addr, length)
+        assert tb.axi_ram.read(pcie_addr - 1, len(test_data) + 2) == b'\x55' + test_data + b'\x55', \
+            f"Data mismatch at addr=0x{pcie_addr:04x}, len={length}"
+
+    assert not tb.status_error_uncor_asserted
+
+    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk)
+
+
+async def run_test_write_single_dword(dut, idle_inserter=None, backpressure_inserter=None):
+    """Test single-DWORD writes (awlen==0 fallback path).
+
+    These exercise the fallback path in STATE_IDLE where first_cycle is used
+    instead of the multi-beat optimization (awlen > 0 branch).
+    """
+    tb = TB(dut)
+
+    byte_lanes = tb.axi_ram.byte_lanes
+
+    tb.set_idle_generator(idle_inserter)
+    tb.set_backpressure_generator(backpressure_inserter)
+
+    await tb.cycle_reset()
+
+    await tb.rc.enumerate()
+
+    dev = tb.rc.find_device(tb.dev.functions[0].pcie_id)
+    await dev.enable_device()
+
+    dev_bar0 = dev.bar_window[0]
+
+    # Single-DWORD writes at various sub-DWORD lengths
+    for length in [1, 2, 3, 4]:
+        for offset in [0, 1, 2, 3]:
+            if offset + length > 4:
+                continue
+            pcie_addr = 0x1000 + offset
+            test_data = bytearray([(x + offset + length) % 256 for x in range(length)])
+
+            tb.axi_ram.write(pcie_addr - 128, b'\x55' * (length + 256))
+
+            tb.log.info("Single-DW write: len=%d, offset=%d", length, offset)
+            await dev_bar0.write(pcie_addr, test_data)
+            await Timer(200, 'ns')
+
+            assert tb.axi_ram.read(pcie_addr - 1, length + 2) == b'\x55' + test_data + b'\x55', \
+                f"Single-DW write mismatch: len={length}, offset={offset}"
+
+    assert not tb.status_error_uncor_asserted
+
+    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk)
+
+
+async def run_test_large_write(dut, idle_inserter=None, backpressure_inserter=None):
+    """Test large writes that span multiple TLPs.
+
+    Writes larger than the max payload size get split into multiple TLPs.
+    This verifies the write module correctly handles multiple consecutive TLPs
+    forming a single large transfer, testing the state machine cycling through
+    STATE_IDLE -> STATE_TRANSFER -> STATE_IDLE -> STATE_TRANSFER etc.
+    """
+    tb = TB(dut)
+
+    byte_lanes = tb.axi_ram.byte_lanes
+
+    tb.set_idle_generator(idle_inserter)
+    tb.set_backpressure_generator(backpressure_inserter)
+
+    await tb.cycle_reset()
+
+    await tb.rc.enumerate()
+
+    dev = tb.rc.find_device(tb.dev.functions[0].pcie_id)
+    await dev.enable_device()
+
+    dev_bar0 = dev.bar_window[0]
+
+    for length in [128, 256, 512, 1024]:
+        pcie_addr = 0x1000
+        test_data = bytearray([x % 256 for x in range(length)])
+
+        tb.axi_ram.write(pcie_addr - 128, b'\x55' * (length + 256))
+
+        tb.log.info("Large write: len=%d", length)
+        await dev_bar0.write(pcie_addr, test_data)
+        await Timer(length * 4 + 500, 'ns')
+
+        assert tb.axi_ram.read(pcie_addr - 1, length + 2) == b'\x55' + test_data + b'\x55', \
+            f"Large write data mismatch at len={length}"
+
+    assert not tb.status_error_uncor_asserted
+
+    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk)
+
+
+async def run_test_unaligned_multibeat(dut, idle_inserter=None, backpressure_inserter=None):
+    """Test multi-beat writes at various unaligned offsets.
+
+    The first-beat optimization in STATE_IDLE computes strobe masks based on
+    the address offset. This test exercises that logic with offsets that cause
+    the first and last beats to be partial, ensuring strobe computation is correct.
+    """
+    tb = TB(dut)
+
+    byte_lanes = tb.axi_ram.byte_lanes
+
+    tb.set_idle_generator(idle_inserter)
+    tb.set_backpressure_generator(backpressure_inserter)
+
+    await tb.cycle_reset()
+
+    await tb.rc.enumerate()
+
+    dev = tb.rc.find_device(tb.dev.functions[0].pcie_id)
+    await dev.enable_device()
+
+    dev_bar0 = dev.bar_window[0]
+
+    # Test multi-beat writes at each sub-bus-width offset
+    for offset in range(1, byte_lanes):
+        for num_beats in [2, 3, 4]:
+            length = byte_lanes * num_beats - offset
+            if length < byte_lanes + 1:
+                continue  # must be multi-beat
+            pcie_addr = 0x1000 + offset
+            test_data = bytearray([(x + offset + num_beats) % 256 for x in range(length)])
+
+            tb.axi_ram.write(pcie_addr - 128, b'\x55' * (length + 256))
+
+            tb.log.info("Unaligned multi-beat: offset=%d, beats=%d, len=%d", offset, num_beats, length)
+            await dev_bar0.write(pcie_addr, test_data)
+            await Timer(length * 4 + 300, 'ns')
+
+            assert tb.axi_ram.read(pcie_addr - 1, length + 2) == b'\x55' + test_data + b'\x55', \
+                f"Unaligned multi-beat mismatch: offset={offset}, beats={num_beats}, len={length}"
+
+    assert not tb.status_error_uncor_asserted
+
+    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk)
+
+
+async def run_test_stress(dut, idle_inserter=None, backpressure_inserter=None):
+    """Stress test with random write sizes and addresses.
+
+    Sends many writes with random lengths and offsets to stress the state machine
+    transitions, strobe logic, and burst handling under varied conditions.
+    """
+    tb = TB(dut)
+
+    byte_lanes = tb.axi_ram.byte_lanes
+
+    tb.set_idle_generator(idle_inserter)
+    tb.set_backpressure_generator(backpressure_inserter)
+
+    await tb.cycle_reset()
+
+    await tb.rc.enumerate()
+
+    dev = tb.rc.find_device(tb.dev.functions[0].pcie_id)
+    await dev.enable_device()
+
+    dev_bar0 = dev.bar_window[0]
+
+    random.seed(42)
+
+    write_ops = []
+    for i in range(30):
+        length = random.randint(1, 128)
+        offset = random.randint(0, byte_lanes - 1)
+        pcie_addr = 0x200 + i * 0x400 + offset  # spread out to avoid overlaps
+        test_data = bytearray([random.randint(0, 255) for _ in range(length)])
+
+        tb.axi_ram.write(pcie_addr - 128, b'\x55' * (length + 256))
+        write_ops.append((pcie_addr, test_data))
+
+        await dev_bar0.write(pcie_addr, test_data)
+
+    await Timer(10000, 'ns')
+
+    for pcie_addr, test_data in write_ops:
+        length = len(test_data)
+        assert tb.axi_ram.read(pcie_addr - 1, length + 2) == b'\x55' + test_data + b'\x55', \
+            f"Stress write mismatch at addr=0x{pcie_addr:04x}, len={length}"
+
+    assert not tb.status_error_uncor_asserted
+
+    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk)
+
+
+async def run_test_aw_backpressure_no_bubble(dut, idle_inserter=None, backpressure_inserter=None):
+    """Test that AW channel backpressure doesn't create TLP input bubbles.
+
+    Applies backpressure ONLY on the AW channel (not the W channel) and
+    verifies that the write data path has zero stall cycles. This validates
+    that the AW output FIFO properly decouples AW channel readiness from
+    TLP acceptance.
+
+    Only run without idle/backpressure (the _001 variant) to isolate AW effects.
+    """
+    if idle_inserter is not None or backpressure_inserter is not None:
+        return
+
+    tb = TB(dut)
+
+    byte_lanes = tb.axi_ram.byte_lanes
+
+    await tb.cycle_reset()
+
+    await tb.rc.enumerate()
+
+    dev = tb.rc.find_device(tb.dev.functions[0].pcie_id)
+    await dev.enable_device()
+
+    dev_bar0 = dev.bar_window[0]
+
+    # Apply AW-only backpressure: accept every other cycle
+    tb.axi_ram.aw_channel.set_pause_generator(itertools.cycle([1, 1, 0, 0]))
+
+    for length in [byte_lanes * 2, byte_lanes * 4, 256]:
+        pcie_addr = 0x1000
+        test_data = bytearray([x % 256 for x in range(length)])
+
+        tb.axi_ram.write(pcie_addr - 128, b'\x55' * (len(test_data) + 256))
+
+        stall_info = {
+            'in_transfer': False,
+            'stall_cycles': 0,
+            'total_input_beats': 0,
+            'tlp_count': 0,
+            'done': False,
+        }
+
+        async def monitor_stalls():
+            while not stall_info['done']:
+                await RisingEdge(dut.clk)
+
+                tlp_valid = int(dut.rx_req_tlp_valid.value)
+                tlp_ready = int(dut.rx_req_tlp_ready.value)
+                tlp_sop = int(dut.rx_req_tlp_sop.value)
+                tlp_eop = int(dut.rx_req_tlp_eop.value)
+
+                if tlp_valid and tlp_ready and tlp_sop:
+                    stall_info['in_transfer'] = True
+                    stall_info['total_input_beats'] += 1
+                    if tlp_eop:
+                        stall_info['in_transfer'] = False
+                        stall_info['tlp_count'] += 1
+                elif stall_info['in_transfer']:
+                    if tlp_valid and tlp_ready:
+                        stall_info['total_input_beats'] += 1
+                        if tlp_eop:
+                            stall_info['in_transfer'] = False
+                            stall_info['tlp_count'] += 1
+                    elif tlp_valid and not tlp_ready:
+                        stall_info['stall_cycles'] += 1
+
+        monitor_task = cocotb.start_soon(monitor_stalls())
+
+        await dev_bar0.write(pcie_addr, test_data)
+        await Timer(length * 4 + 500, 'ns')
+
+        stall_info['done'] = True
+        await RisingEdge(dut.clk)
+
+        monitor_task.kill()
+
+        assert tb.axi_ram.read(pcie_addr - 1, len(test_data) + 2) == b'\x55' + test_data + b'\x55'
+        assert not tb.status_error_uncor_asserted
+
+        tb.log.info("AW backpressure write %dB: %d TLPs, %d input beats, %d stall cycles",
+                     length, stall_info['tlp_count'], stall_info['total_input_beats'],
+                     stall_info['stall_cycles'])
+
+        assert stall_info['stall_cycles'] == 0, \
+            f"AW backpressure write of {length}B had {stall_info['stall_cycles']} stall cycle(s) " \
+            f"- AW FIFO should decouple AW channel from TLP acceptance!"
+
+    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk)
+
+
 def cycle_pause():
     return itertools.cycle([1, 1, 1, 0])
 
@@ -256,7 +682,14 @@ if cocotb.SIM_NAME:
 
     for test in [
                 run_test_write,
-                run_test_bad_ops
+                run_test_bad_ops,
+                run_test_write_aligned_no_extra_cycle,
+                run_test_back_to_back_writes,
+                run_test_write_single_dword,
+                run_test_large_write,
+                run_test_unaligned_multibeat,
+                run_test_stress,
+                run_test_aw_backpressure_no_bubble,
             ]:
 
         factory = TestFactory(test)

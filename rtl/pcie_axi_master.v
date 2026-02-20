@@ -133,7 +133,6 @@ module pcie_axi_master #
 
 wire [1:0] status_error_uncor_int;
 
-wire [TLP_DATA_WIDTH-1:0]               read_rx_req_tlp_data;
 wire [TLP_SEG_COUNT*TLP_HDR_WIDTH-1:0]  read_rx_req_tlp_hdr;
 wire [TLP_SEG_COUNT-1:0]                read_rx_req_tlp_valid;
 wire [TLP_SEG_COUNT-1:0]                read_rx_req_tlp_sop;
@@ -147,83 +146,47 @@ wire [TLP_SEG_COUNT-1:0]                write_rx_req_tlp_sop;
 wire [TLP_SEG_COUNT-1:0]                write_rx_req_tlp_eop;
 wire                                    write_rx_req_tlp_ready;
 
-wire [TLP_SEG_COUNT*TLP_HDR_WIDTH-1:0] match_tlp_hdr;
+// Combinational TLP type check: memory write TLP?
+// MEM_WRITE 3DW: fmt_type = 8'b010_00000
+// MEM_WRITE 4DW: fmt_type = 8'b011_00000
+wire is_write_tlp = (rx_req_tlp_hdr[127:120] == 8'b010_00000) ||
+                    (rx_req_tlp_hdr[127:120] == 8'b011_00000);
 
-wire [TLP_SEG_COUNT*2-1:0] select;
+// Frame tracking: which port is selected during multi-beat TLPs
+reg select_wr_reg = 1'b0;
 
-generate
+// Combinational select: on SOP use header check, otherwise use registered value
+wire select_wr = (rx_req_tlp_valid && rx_req_tlp_sop) ? is_write_tlp : select_wr_reg;
 
-    genvar n;
+// Combinational data/header routing (zero latency)
+assign write_rx_req_tlp_data  = rx_req_tlp_data;
+assign write_rx_req_tlp_hdr   = rx_req_tlp_hdr;
+assign write_rx_req_tlp_valid = rx_req_tlp_valid & select_wr;
+assign write_rx_req_tlp_sop   = rx_req_tlp_sop & select_wr;
+assign write_rx_req_tlp_eop   = rx_req_tlp_eop & select_wr;
 
-    for (n = 0; n < TLP_SEG_COUNT; n = n + 1) begin
-        assign select[n*2+1] = match_tlp_hdr[n*TLP_HDR_WIDTH+120 +: 8] == 8'b010_00000 ||
-            match_tlp_hdr[n*TLP_HDR_WIDTH+120 +: 8] == 8'b011_00000;
-        assign select[n*2+0] = !select[n*2+1];
+assign read_rx_req_tlp_hdr   = rx_req_tlp_hdr;
+assign read_rx_req_tlp_valid = rx_req_tlp_valid & ~select_wr;
+assign read_rx_req_tlp_sop   = rx_req_tlp_sop & ~select_wr;
+assign read_rx_req_tlp_eop   = rx_req_tlp_eop & ~select_wr;
+
+// Ready from selected downstream module
+assign rx_req_tlp_ready = select_wr ? write_rx_req_tlp_ready : read_rx_req_tlp_ready;
+
+// Frame register: track selected port across multi-beat TLPs
+always @(posedge clk) begin
+    if (rx_req_tlp_valid && rx_req_tlp_ready) begin
+        if (rx_req_tlp_sop && !rx_req_tlp_eop) begin
+            select_wr_reg <= is_write_tlp;
+        end
+        if (rx_req_tlp_eop) begin
+            select_wr_reg <= 1'b0;
+        end
     end
-
-endgenerate
-
-pcie_tlp_demux #(
-    .PORTS(2),
-    .TLP_DATA_WIDTH(TLP_DATA_WIDTH),
-    .TLP_STRB_WIDTH(TLP_STRB_WIDTH),
-    .TLP_HDR_WIDTH(TLP_HDR_WIDTH),
-    .IN_TLP_SEG_COUNT(TLP_SEG_COUNT),
-    .OUT_TLP_SEG_COUNT(TLP_SEG_COUNT),
-    .FIFO_ENABLE(0)
-)
-pcie_tlp_demux_inst (
-    .clk(clk),
-    .rst(rst),
-
-    /*
-     * TLP input
-     */
-    .in_tlp_data(rx_req_tlp_data),
-    .in_tlp_strb(0),
-    .in_tlp_hdr(rx_req_tlp_hdr),
-    .in_tlp_bar_id(0),
-    .in_tlp_func_num(0),
-    .in_tlp_error(0),
-    .in_tlp_valid(rx_req_tlp_valid),
-    .in_tlp_sop(rx_req_tlp_sop),
-    .in_tlp_eop(rx_req_tlp_eop),
-    .in_tlp_ready(rx_req_tlp_ready),
-
-    /*
-     * TLP output
-     */
-    .out_tlp_data({write_rx_req_tlp_data, read_rx_req_tlp_data}),
-    .out_tlp_strb(),
-    .out_tlp_hdr({write_rx_req_tlp_hdr, read_rx_req_tlp_hdr}),
-    .out_tlp_bar_id(),
-    .out_tlp_func_num(),
-    .out_tlp_error(),
-    .out_tlp_valid({write_rx_req_tlp_valid, read_rx_req_tlp_valid}),
-    .out_tlp_sop({write_rx_req_tlp_sop, read_rx_req_tlp_sop}),
-    .out_tlp_eop({write_rx_req_tlp_eop, read_rx_req_tlp_eop}),
-    .out_tlp_ready({write_rx_req_tlp_ready, read_rx_req_tlp_ready}),
-
-    /*
-     * Fields
-     */
-    .match_tlp_hdr(match_tlp_hdr),
-    .match_tlp_bar_id(),
-    .match_tlp_func_num(),
-
-    /*
-     * Control
-     */
-    .enable(1'b1),
-    .drop({TLP_SEG_COUNT{1'b0}}),
-    .select(select),
-
-    /*
-     * Status
-     */
-    .fifo_half_full(),
-    .fifo_watermark()
-);
+    if (rst) begin
+        select_wr_reg <= 1'b0;
+    end
+end
 
 pcie_axi_master_rd #(
     .TLP_DATA_WIDTH(TLP_DATA_WIDTH),

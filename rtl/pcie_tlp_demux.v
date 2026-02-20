@@ -151,8 +151,6 @@ reg [IN_TLP_SEG_COUNT-1:0] out_tlp_eop_reg = 0, out_tlp_eop_next;
 
 wire [PORTS-1:0] out_tlp_ready_int;
 
-assign in_tlp_ready = (!out_tlp_valid_reg || &out_tlp_ready_int) && enable;
-
 assign match_tlp_hdr = in_tlp_hdr;
 assign match_tlp_bar_id = in_tlp_bar_id;
 assign match_tlp_func_num = in_tlp_func_num;
@@ -162,6 +160,8 @@ generate
 genvar n;
 
 if (FIFO_ENABLE) begin
+
+    assign in_tlp_ready = (!out_tlp_valid_reg || &out_tlp_ready_int) && enable;
 
     for (n = 0; n < PORTS; n = n + 1) begin
 
@@ -218,20 +218,63 @@ if (FIFO_ENABLE) begin
 
     end
 
-end else begin
+end else begin : gen_no_fifo
 
-    assign out_tlp_data = {PORTS{out_tlp_data_reg}};
-    assign out_tlp_strb = {PORTS{out_tlp_strb_reg}};
-    assign out_tlp_hdr = {PORTS{out_tlp_hdr_reg}};
-    assign out_tlp_seq = {PORTS{out_tlp_seq_reg}};
-    assign out_tlp_bar_id = {PORTS{out_tlp_bar_id_reg}};
-    assign out_tlp_func_num = {PORTS{out_tlp_func_num_reg}};
-    assign out_tlp_error = {PORTS{out_tlp_error_reg}};
-    assign out_tlp_valid = out_tlp_valid_reg;
-    assign out_tlp_sop = {PORTS{out_tlp_sop_reg}};
-    assign out_tlp_eop = {PORTS{out_tlp_eop_reg}};
+    // Zero-latency combinational routing (no FIFO)
+    // Data is routed directly from input to the selected output port
+    // with no registered output stage.
+
+    // Combinational port selection
+    reg [CL_PORTS-1:0] sel_port;
+    reg sel_drop;
+    integer p;
+
+    always @* begin
+        sel_port = select_reg;
+        sel_drop = drop_reg;
+
+        if (!frame_reg) begin
+            if (in_tlp_valid && in_tlp_sop) begin
+                // New frame starting: decode port from select inputs
+                sel_port = 0;
+                sel_drop = 1'b1;
+                for (p = 0; p < PORTS; p = p + 1) begin
+                    if (select[IN_TLP_SEG_COUNT*p]) begin
+                        sel_port = p[CL_PORTS-1:0];
+                        sel_drop = 1'b0;
+                    end
+                end
+                if (drop[0]) begin
+                    sel_drop = 1'b1;
+                end
+            end else begin
+                // Not in a frame, no valid SOP: always ready
+                sel_drop = 1'b1;
+            end
+        end
+    end
+
+    // Broadcast data/metadata to all ports (valid gates acceptance)
+    assign out_tlp_data = {PORTS{in_tlp_data}};
+    assign out_tlp_strb = {PORTS{in_tlp_strb}};
+    assign out_tlp_hdr = {PORTS{in_tlp_hdr}};
+    assign out_tlp_seq = {PORTS{in_tlp_seq}};
+    assign out_tlp_bar_id = {PORTS{in_tlp_bar_id}};
+    assign out_tlp_func_num = {PORTS{in_tlp_func_num}};
+    assign out_tlp_error = {PORTS{in_tlp_error}};
+    assign out_tlp_sop = {PORTS{in_tlp_sop}};
+    assign out_tlp_eop = {PORTS{in_tlp_eop}};
+
+    // Valid only to the selected port
+    for (n = 0; n < PORTS; n = n + 1) begin : gen_valid
+        assign out_tlp_valid[IN_TLP_SEG_COUNT*n +: IN_TLP_SEG_COUNT] =
+            in_tlp_valid & {IN_TLP_SEG_COUNT{!sel_drop && (sel_port == n[CL_PORTS-1:0]) && enable}};
+    end
 
     assign out_tlp_ready_int = out_tlp_ready;
+
+    // Ready from selected downstream port, or always ready when dropping/idle
+    assign in_tlp_ready = enable && (sel_drop || out_tlp_ready_int[sel_port]);
 
     assign fifo_half_full = 0;
     assign fifo_watermark = 0;

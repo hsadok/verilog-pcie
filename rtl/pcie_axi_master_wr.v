@@ -183,9 +183,11 @@ reg [1:0] rx_req_tlp_hdr_ph;
 
 reg rx_req_tlp_ready_reg = 1'b0, rx_req_tlp_ready_next;
 
-reg [AXI_ADDR_WIDTH-1:0] m_axi_awaddr_reg = {AXI_ADDR_WIDTH{1'b0}}, m_axi_awaddr_next;
-reg [7:0] m_axi_awlen_reg = 8'd0, m_axi_awlen_next;
-reg m_axi_awvalid_reg = 1'b0, m_axi_awvalid_next;
+// internal AW datapath (feeds AW output FIFO)
+reg [AXI_ADDR_WIDTH-1:0] m_axi_awaddr_int;
+reg [7:0] m_axi_awlen_int;
+reg m_axi_awvalid_int;
+wire m_axi_aw_ready_int;
 
 reg [TLP_DATA_WIDTH-1:0] save_tlp_data_reg = {TLP_DATA_WIDTH{1'b0}};
 
@@ -201,16 +203,6 @@ reg                        m_axi_wlast_int;
 wire                       m_axi_wready_int;
 
 assign rx_req_tlp_ready = rx_req_tlp_ready_reg;
-
-assign m_axi_awid = {AXI_ID_WIDTH{1'b0}};
-assign m_axi_awaddr = m_axi_awaddr_reg;
-assign m_axi_awlen = m_axi_awlen_reg;
-assign m_axi_awsize = $clog2(AXI_STRB_WIDTH);
-assign m_axi_awburst = 2'b01;
-assign m_axi_awlock = 1'b0;
-assign m_axi_awcache = 4'b0011;
-assign m_axi_awprot = 3'b010;
-assign m_axi_awvalid = m_axi_awvalid_reg;
 
 assign m_axi_bready = 1'b1;
 
@@ -235,9 +227,9 @@ always @* begin
 
     rx_req_tlp_ready_next = 1'b0;
 
-    m_axi_awaddr_next = m_axi_awaddr_reg;
-    m_axi_awlen_next = m_axi_awlen_reg;
-    m_axi_awvalid_next = m_axi_awvalid_reg && !m_axi_awready;
+    m_axi_awaddr_int = {AXI_ADDR_WIDTH{1'b0}};
+    m_axi_awlen_int = 8'd0;
+    m_axi_awvalid_int = 1'b0;
 
     m_axi_wdata_int = shift_tlp_data;
     m_axi_wstrb_int = {AXI_STRB_WIDTH{1'b1}};
@@ -281,7 +273,7 @@ always @* begin
     case (state_reg)
         STATE_IDLE: begin
             // idle state, wait for completion request
-            rx_req_tlp_ready_next = (!m_axi_awvalid_reg || m_axi_awready) && m_axi_wready_int;
+            rx_req_tlp_ready_next = m_axi_aw_ready_int && m_axi_wready_int;
 
             axi_addr_next = rx_req_tlp_hdr_addr;
             op_dword_count_next = rx_req_tlp_hdr_length;
@@ -294,15 +286,15 @@ always @* begin
                     // packet smaller than max burst size
                     // assumed to not cross 4k boundary, send one request
                     tr_dword_count_next = op_dword_count_next;
-                    m_axi_awlen_next = (tr_dword_count_next + axi_addr_next[OFFSET_WIDTH+2-1:2] - 1) >> (AXI_BURST_SIZE-2);
+                    m_axi_awlen_int = (tr_dword_count_next + axi_addr_next[OFFSET_WIDTH+2-1:2] - 1) >> (AXI_BURST_SIZE-2);
                 end else begin
                     // packet larger than max burst size
                     // assumed to not cross 4k boundary, aligned split on burst size
                     tr_dword_count_next = AXI_MAX_BURST_SIZE/4 - axi_addr_next[OFFSET_WIDTH+2-1:2];
-                    m_axi_awlen_next = (tr_dword_count_next - 1) >> (AXI_BURST_SIZE-2);
+                    m_axi_awlen_int = (tr_dword_count_next - 1) >> (AXI_BURST_SIZE-2);
                 end
 
-                m_axi_awaddr_next = axi_addr_next;
+                m_axi_awaddr_int = axi_addr_next;
 
                 // required DWORD shift to place first DWORD from the TLP payload into proper position on AXI interface
                 offset_next = axi_addr_next >> 2;
@@ -311,7 +303,7 @@ always @* begin
                 // number of bus transfers in TLP, DOWRD count divided by bus width in DWORDS
                 input_cycle_count_next = (tr_dword_count_next - 1) >> (AXI_BURST_SIZE-2);
                 // number of bus transfers to AXI, DWORD count plus DWORD offset, divided by bus width in DWORDS
-                output_cycle_count_next = m_axi_awlen_next;
+                output_cycle_count_next = m_axi_awlen_int;
                 last_cycle_offset_next = offset_next + tr_dword_count_next;
                 last_cycle_next = output_cycle_count_next == 0;
                 input_active_next = input_cycle_count_next != 0;
@@ -322,10 +314,46 @@ always @* begin
                 if (rx_req_tlp_hdr_fmt[1] && rx_req_tlp_hdr_type == 5'b00000 && !rx_req_tlp_hdr_ep) begin
                     // write request
 
-                    m_axi_awvalid_next = 1'b1;
+                    m_axi_awvalid_int = 1'b1;
 
-                    rx_req_tlp_ready_next = 1'b0;
-                    state_next = STATE_TRANSFER;
+                    if (m_axi_awlen_int > 0) begin
+                        // multi-beat AXI transfer: emit first beat immediately
+                        m_axi_wdata_int = {rx_req_tlp_data, {TLP_DATA_WIDTH{1'b0}}} >> ((TLP_DATA_WIDTH_DWORDS-offset_next)*32);
+                        m_axi_wstrb_int = {{AXI_STRB_WIDTH-4{1'b1}}, first_be_next} << (offset_next*4);
+                        m_axi_wvalid_int = 1'b1;
+                        first_cycle_next = 1'b0;
+
+                        // adjust counters for beat already emitted
+                        output_cycle_count_next = m_axi_awlen_int - 1;
+                        last_cycle_next = output_cycle_count_next == 0;
+
+                        rx_req_tlp_ready_next = m_axi_wready_int && input_active_next;
+                        state_next = STATE_TRANSFER;
+                    end else begin
+                        // single-beat AXI transfer: emit the only W beat immediately
+                        m_axi_wdata_int = {rx_req_tlp_data, {TLP_DATA_WIDTH{1'b0}}} >> ((TLP_DATA_WIDTH_DWORDS-offset_next)*32);
+                        m_axi_wstrb_int = {{AXI_STRB_WIDTH-4{1'b1}}, first_be_next} << (offset_next*4);
+                        // apply last BE mask for the single output beat
+                        if (last_cycle_offset_next > 0) begin
+                            m_axi_wstrb_int = m_axi_wstrb_int & {last_be_next, {AXI_STRB_WIDTH-4{1'b1}}} >> (AXI_STRB_WIDTH-last_cycle_offset_next*4);
+                        end else begin
+                            m_axi_wstrb_int = m_axi_wstrb_int & {last_be_next, {AXI_STRB_WIDTH-4{1'b1}}};
+                        end
+                        m_axi_wvalid_int = 1'b1;
+                        m_axi_wlast_int = 1'b1;
+
+                        // for single-beat AXI with awlen=0, the full op fits in
+                        // one burst so op_dword_count_next is always 0
+                        if (rx_req_tlp_eop) begin
+                            // TLP also complete - stay idle, ready for next TLP
+                            rx_req_tlp_ready_next = m_axi_aw_ready_int && m_axi_wready_int;
+                            state_next = STATE_IDLE;
+                        end else begin
+                            // multi-beat TLP but single AXI burst - consume remaining beats
+                            rx_req_tlp_ready_next = 1'b1;
+                            state_next = STATE_WAIT_END;
+                        end
+                    end
                 end else begin
                     // other request
                     status_error_uncor_next = 1'b1;
@@ -391,20 +419,20 @@ always @* begin
                         // packet smaller than max burst size
                         // assumed to not cross 4k boundary, send one request
                         tr_dword_count_next = op_dword_count_reg;
-                        m_axi_awlen_next = (tr_dword_count_next + axi_addr_reg[OFFSET_WIDTH+2-1:2] - 1) >> (AXI_BURST_SIZE-2);
+                        m_axi_awlen_int = (tr_dword_count_next + axi_addr_reg[OFFSET_WIDTH+2-1:2] - 1) >> (AXI_BURST_SIZE-2);
                     end else begin
                         // packet larger than max burst size
                         // assumed to not cross 4k boundary, aligned split on burst size
                         tr_dword_count_next = AXI_MAX_BURST_SIZE/4 - axi_addr_reg[OFFSET_WIDTH+2-1:2];
-                        m_axi_awlen_next = (tr_dword_count_next - 1) >> (AXI_BURST_SIZE-2);
+                        m_axi_awlen_int = (tr_dword_count_next - 1) >> (AXI_BURST_SIZE-2);
                     end
 
-                    m_axi_awaddr_next = axi_addr_reg;
+                    m_axi_awaddr_int = axi_addr_reg;
 
                     // number of bus transfers in TLP, DOWRD count minus payload start DWORD offset, divided by bus width in DWORDS
                     input_cycle_count_next = (tr_dword_count_next - offset_reg - 1) >> (AXI_BURST_SIZE-2);
                     // number of bus transfers to AXI, DWORD count plus DWORD offset, divided by bus width in DWORDS
-                    output_cycle_count_next = m_axi_awlen_next;
+                    output_cycle_count_next = m_axi_awlen_int;
                     last_cycle_offset_next = axi_addr_reg[OFFSET_WIDTH+2-1:2] + tr_dword_count_next;
                     last_cycle_next = output_cycle_count_next == 0;
                     input_active_next = input_cycle_count_next != 0;
@@ -412,11 +440,11 @@ always @* begin
                     axi_addr_next = axi_addr_reg + (tr_dword_count_next << 2);
                     op_dword_count_next = op_dword_count_reg - tr_dword_count_next;
 
-                    m_axi_awvalid_next = 1'b1;
+                    m_axi_awvalid_int = 1'b1;
                     rx_req_tlp_ready_next = m_axi_wready_int && input_active_next;
                     state_next = STATE_TRANSFER;
                 end else begin
-                    rx_req_tlp_ready_next = (!m_axi_awvalid_reg || m_axi_awready) && m_axi_wready_int;
+                    rx_req_tlp_ready_next = m_axi_aw_ready_int && m_axi_wready_int;
                     state_next = STATE_IDLE;
                 end
             end else begin
@@ -430,7 +458,7 @@ always @* begin
             if (rx_req_tlp_ready && rx_req_tlp_valid) begin
                 if (rx_req_tlp_eop) begin
 
-                    rx_req_tlp_ready_next = (!m_axi_awvalid_reg || m_axi_awready) && m_axi_wready_int;
+                    rx_req_tlp_ready_next = m_axi_aw_ready_int && m_axi_wready_int;
 
                     state_next = STATE_IDLE;
                 end else begin
@@ -463,10 +491,6 @@ always @(posedge clk) begin
 
     rx_req_tlp_ready_reg <= rx_req_tlp_ready_next;
 
-    m_axi_awaddr_reg <= m_axi_awaddr_next;
-    m_axi_awlen_reg <= m_axi_awlen_next;
-    m_axi_awvalid_reg <= m_axi_awvalid_next;
-
     status_error_uncor_reg <= status_error_uncor_next;
 
     if (rx_req_tlp_ready && rx_req_tlp_valid) begin
@@ -478,9 +502,61 @@ always @(posedge clk) begin
 
         rx_req_tlp_ready_reg <= 1'b0;
 
-        m_axi_awvalid_reg <= 1'b0;
-
         status_error_uncor_reg <= 1'b0;
+    end
+end
+
+// output datapath logic (AXI write address)
+reg [AXI_ADDR_WIDTH-1:0] m_axi_awaddr_reg = {AXI_ADDR_WIDTH{1'b0}};
+reg [7:0]               m_axi_awlen_reg  = 8'd0;
+reg                     m_axi_awvalid_reg = 1'b0;
+
+reg [OUTPUT_FIFO_ADDR_WIDTH+1-1:0] aw_fifo_wr_ptr_reg = 0;
+reg [OUTPUT_FIFO_ADDR_WIDTH+1-1:0] aw_fifo_rd_ptr_reg = 0;
+reg aw_fifo_half_full_reg = 1'b0;
+
+wire aw_fifo_full = aw_fifo_wr_ptr_reg == (aw_fifo_rd_ptr_reg ^ {1'b1, {OUTPUT_FIFO_ADDR_WIDTH{1'b0}}});
+wire aw_fifo_empty = aw_fifo_wr_ptr_reg == aw_fifo_rd_ptr_reg;
+
+(* ram_style = "distributed", ramstyle = "no_rw_check, mlab" *)
+reg [AXI_ADDR_WIDTH-1:0] aw_fifo_awaddr[2**OUTPUT_FIFO_ADDR_WIDTH-1:0];
+(* ram_style = "distributed", ramstyle = "no_rw_check, mlab" *)
+reg [7:0]               aw_fifo_awlen[2**OUTPUT_FIFO_ADDR_WIDTH-1:0];
+
+assign m_axi_aw_ready_int = !aw_fifo_half_full_reg;
+
+assign m_axi_awid = {AXI_ID_WIDTH{1'b0}};
+assign m_axi_awaddr = m_axi_awaddr_reg;
+assign m_axi_awlen = m_axi_awlen_reg;
+assign m_axi_awsize = $clog2(AXI_STRB_WIDTH);
+assign m_axi_awburst = 2'b01;
+assign m_axi_awlock = 1'b0;
+assign m_axi_awcache = 4'b0011;
+assign m_axi_awprot = 3'b010;
+assign m_axi_awvalid = m_axi_awvalid_reg;
+
+always @(posedge clk) begin
+    m_axi_awvalid_reg <= m_axi_awvalid_reg && !m_axi_awready;
+
+    aw_fifo_half_full_reg <= $unsigned(aw_fifo_wr_ptr_reg - aw_fifo_rd_ptr_reg) >= 2**(OUTPUT_FIFO_ADDR_WIDTH-1);
+
+    if (!aw_fifo_full && m_axi_awvalid_int) begin
+        aw_fifo_awaddr[aw_fifo_wr_ptr_reg[OUTPUT_FIFO_ADDR_WIDTH-1:0]] <= m_axi_awaddr_int;
+        aw_fifo_awlen[aw_fifo_wr_ptr_reg[OUTPUT_FIFO_ADDR_WIDTH-1:0]] <= m_axi_awlen_int;
+        aw_fifo_wr_ptr_reg <= aw_fifo_wr_ptr_reg + 1;
+    end
+
+    if (!aw_fifo_empty && (!m_axi_awvalid_reg || m_axi_awready)) begin
+        m_axi_awaddr_reg <= aw_fifo_awaddr[aw_fifo_rd_ptr_reg[OUTPUT_FIFO_ADDR_WIDTH-1:0]];
+        m_axi_awlen_reg <= aw_fifo_awlen[aw_fifo_rd_ptr_reg[OUTPUT_FIFO_ADDR_WIDTH-1:0]];
+        m_axi_awvalid_reg <= 1'b1;
+        aw_fifo_rd_ptr_reg <= aw_fifo_rd_ptr_reg + 1;
+    end
+
+    if (rst) begin
+        aw_fifo_wr_ptr_reg <= 0;
+        aw_fifo_rd_ptr_reg <= 0;
+        m_axi_awvalid_reg <= 1'b0;
     end
 end
 
