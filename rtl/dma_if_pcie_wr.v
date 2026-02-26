@@ -566,10 +566,49 @@ always @* begin
             stat_wr_op_start_len_next = s_axis_write_desc_len;
 
             if (s_axis_write_desc_ready & s_axis_write_desc_valid) begin
-                s_axis_write_desc_ready_next = 1'b0;
                 stat_wr_op_start_tag_next = stat_wr_op_start_tag_reg+1;
                 stat_wr_op_start_valid_next = 1'b1;
-                req_state_next = REQ_STATE_START;
+
+                if (op_count_next == tlp_count_next && (!read_cmd_valid_reg || read_cmd_ready)
+                        && !op_table_active[op_table_start_ptr_reg[OP_TAG_WIDTH-1:0]]
+                        && ($unsigned(op_table_start_ptr_reg - op_table_finish_ptr_reg) < 2**OP_TAG_WIDTH)) begin
+                    // Fast path: single-TLP descriptor, read pipeline ready,
+                    // and op table slot available.  Perform op table allocation
+                    // and read command issue in one cycle, staying in IDLE to
+                    // accept the next descriptor immediately.
+                    read_cmd_pcie_addr_next = pcie_addr_next;
+                    read_cmd_ram_sel_next = ram_sel_next;
+                    read_cmd_ram_addr_next = ram_addr_next;
+                    read_cmd_imm_en_next = imm_en_next;
+                    read_cmd_len_next = tlp_count_next;
+                    read_cmd_cycle_count_next = (tlp_count_next + pcie_addr_next[1:0] - 1) >> $clog2(TLP_DATA_WIDTH_BYTES);
+                    op_table_start_cycle_count = read_cmd_cycle_count_next;
+                    read_cmd_last_cycle_next = read_cmd_cycle_count_next == 0;
+                    read_cmd_valid_next = 1'b1;
+
+                    op_table_start_pcie_addr = pcie_addr_next;
+                    op_table_start_imm = imm_next;
+                    op_table_start_imm_en = imm_en_next;
+                    op_table_start_len = tlp_count_next;
+                    op_table_start_zero_len = zero_len_next;
+                    op_table_start_dword_len = (tlp_count_next + pcie_addr_next[1:0] + 3) >> 2;
+                    op_table_start_offset = pcie_addr_next[1:0]-ram_addr_next[RAM_OFFSET_WIDTH-1:0];
+                    op_table_start_tag = tag_next;
+                    op_table_start_last = 1'b1;
+                    op_table_start_en = 1'b1;
+                    inc_active_op = 1'b1;
+
+                    stat_wr_req_start_tag_next = op_table_start_ptr_reg;
+                    stat_wr_req_start_len_next = zero_len_next ? 0 : tlp_count_next;
+                    stat_wr_req_start_valid_next = 1'b1;
+
+                    s_axis_write_desc_ready_next = !op_table_active[op_table_start_ptr_reg[OP_TAG_WIDTH-1:0]] && ($unsigned(op_table_start_ptr_reg - op_table_finish_ptr_reg) < 2**OP_TAG_WIDTH) && enable;
+                    req_state_next = REQ_STATE_IDLE;
+                end else begin
+                    // Slow path: multi-TLP descriptor or read pipeline busy.
+                    s_axis_write_desc_ready_next = 1'b0;
+                    req_state_next = REQ_STATE_START;
+                end
             end else begin
                 req_state_next = REQ_STATE_IDLE;
             end
