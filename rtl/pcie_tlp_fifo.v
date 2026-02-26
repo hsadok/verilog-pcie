@@ -427,6 +427,10 @@ end else begin
 
     assign out_tlp_ready_int = !out_fifo_half_full_reg;
 
+    // Bypass: when FIFO is empty, forward packing output directly to
+    // the output register to avoid the 1-cycle empty-to-valid latency.
+    wire out_fifo_bypass = out_fifo_empty && out_tlp_valid_int && (!out_tlp_valid_reg || out_tlp_ready);
+
     assign out_tlp_data = out_tlp_data_reg;
     assign out_tlp_strb = out_tlp_strb_reg;
     assign out_tlp_hdr = out_tlp_hdr_reg;
@@ -443,7 +447,7 @@ end else begin
 
         out_fifo_half_full_reg <= $unsigned(out_fifo_wr_ptr_reg - out_fifo_rd_ptr_reg) >= 2**(OUTPUT_FIFO_ADDR_WIDTH-1);
 
-        if (!out_fifo_full && out_tlp_valid_int) begin
+        if (!out_fifo_full && out_tlp_valid_int && !out_fifo_bypass) begin
             out_fifo_out_tlp_data[out_fifo_wr_ptr_reg[OUTPUT_FIFO_ADDR_WIDTH-1:0]] <= out_tlp_data_int;
             out_fifo_out_tlp_strb[out_fifo_wr_ptr_reg[OUTPUT_FIFO_ADDR_WIDTH-1:0]] <= out_tlp_strb_int;
             out_fifo_out_tlp_hdr[out_fifo_wr_ptr_reg[OUTPUT_FIFO_ADDR_WIDTH-1:0]] <= out_tlp_hdr_int;
@@ -473,6 +477,24 @@ end else begin
             out_tlp_sop_reg <= out_fifo_out_tlp_sop[out_fifo_rd_ptr_reg[OUTPUT_FIFO_ADDR_WIDTH-1:0]];
             out_tlp_eop_reg <= out_fifo_out_tlp_eop[out_fifo_rd_ptr_reg[OUTPUT_FIFO_ADDR_WIDTH-1:0]];
             out_fifo_rd_ptr_reg <= out_fifo_rd_ptr_reg + 1;
+        end
+
+        // Bypass path: load packing output directly into output register
+        if (out_fifo_bypass) begin
+            out_tlp_data_reg <= out_tlp_data_int;
+            out_tlp_strb_reg <= out_tlp_strb_int;
+            out_tlp_hdr_reg <= out_tlp_hdr_int;
+            out_tlp_seq_reg <= out_tlp_seq_int;
+            out_tlp_bar_id_reg <= out_tlp_bar_id_int;
+            out_tlp_func_num_reg <= out_tlp_func_num_int;
+            out_tlp_error_reg <= out_tlp_error_int;
+            if (OUT_TLP_SEG_COUNT == 1) begin
+                out_tlp_valid_reg <= 1'b1;
+            end else begin
+                out_tlp_valid_reg <= out_tlp_valid_int;
+            end
+            out_tlp_sop_reg <= out_tlp_sop_int;
+            out_tlp_eop_reg <= out_tlp_eop_int;
         end
 
         if (rst) begin
