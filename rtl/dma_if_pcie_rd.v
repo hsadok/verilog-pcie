@@ -1198,6 +1198,7 @@ always @* begin
                     last_cycle = 1'b1;
                 end
                 start_offset_next = addr_next;
+                offset_next = start_offset_next[OFFSET_WIDTH-1:0];
                 {ram_wrap_next, end_offset_next} = start_offset_next+cycle_byte_count_next-1;
 
                 ram_mask_0_next = {RAM_SEG_COUNT{1'b1}} << (start_offset_next >> $clog2(RAM_SEG_BE_WIDTH));
@@ -1383,11 +1384,11 @@ always @* begin
 
     active_tx_count_av_next = active_tx_count_next < TX_LIMIT;
 
-    active_cplh_fc_count_next <= active_cplh_fc_count_reg + inc_active_cplh_fc_count - dec_active_cplh_fc_count;
-    active_cplh_fc_av_next <= !CPLH_FC_LIMIT || active_cplh_fc_count_next < CPLH_FC_LIMIT;
+    active_cplh_fc_count_next = active_cplh_fc_count_reg + inc_active_cplh_fc_count - dec_active_cplh_fc_count;
+    active_cplh_fc_av_next = !CPLH_FC_LIMIT || active_cplh_fc_count_next < CPLH_FC_LIMIT;
 
-    active_cpld_fc_count_next <= active_cpld_fc_count_reg + inc_active_cpld_fc_count - dec_active_cpld_fc_count;
-    active_cpld_fc_av_next <= !CPLD_FC_LIMIT || active_cpld_fc_count_next < CPLD_FC_LIMIT;
+    active_cpld_fc_count_next = active_cpld_fc_count_reg + inc_active_cpld_fc_count - dec_active_cpld_fc_count;
+    active_cpld_fc_av_next = !CPLD_FC_LIMIT || active_cpld_fc_count_next < CPLD_FC_LIMIT;
 end
 
 always @(posedge clk) begin

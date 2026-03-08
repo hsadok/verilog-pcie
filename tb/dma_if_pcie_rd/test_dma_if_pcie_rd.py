@@ -146,13 +146,12 @@ async def run_test_read(dut, idle_inserter=None, backpressure_inserter=None):
 
     tb = TB(dut)
 
-    if os.getenv("PCIE_OFFSET") is None:
-        pcie_offsets = list(range(4))+list(range(4096-4, 4096))
-    else:
-        pcie_offsets = [int(os.getenv("PCIE_OFFSET"))]
-
     byte_lanes = tb.dma_ram.byte_lanes
     tag_count = 2**len(tb.read_desc_source.bus.tag)
+
+    pcie_offsets = parse_int_list_env("PCIE_OFFSETS", list(range(4))+list(range(4096-4, 4096)))
+    lengths = parse_int_list_env("TEST_LENGTHS", list(range(0, byte_lanes+3))+list(range(128-4, 128+4))+[1024])
+    ram_offsets = parse_int_list_env("RAM_OFFSETS", list(range(byte_lanes+1)))
 
     cur_tag = 1
 
@@ -173,9 +172,9 @@ async def run_test_read(dut, idle_inserter=None, backpressure_inserter=None):
     tb.dut.requester_id <= tb.dev.bus_num << 8
     tb.dut.enable <= 1
 
-    for length in list(range(0, byte_lanes+3))+list(range(128-4, 128+4))+[1024]:
+    for length in lengths:
         for pcie_offset in pcie_offsets:
-            for ram_offset in range(byte_lanes+1):
+            for ram_offset in ram_offsets:
                 tb.log.info("length %d, pcie_offset %d, ram_offset %d", length, pcie_offset, ram_offset)
                 pcie_addr = pcie_offset+0x1000
                 ram_addr = ram_offset+0x1000
@@ -282,6 +281,14 @@ def cycle_pause():
     return itertools.cycle([1, 1, 1, 0])
 
 
+def parse_int_list_env(name, default_values):
+    value = os.getenv(name)
+    if not value:
+        return default_values
+
+    return [int(item) for item in value.split(",") if item]
+
+
 if cocotb.SIM_NAME:
 
     for test in [
@@ -298,6 +305,17 @@ if cocotb.SIM_NAME:
 
 tests_dir = os.path.dirname(__file__)
 rtl_dir = os.path.abspath(os.path.join(tests_dir, '..', '..', 'rtl'))
+
+
+def get_verilator_compile_args():
+    if os.getenv("SIM") != "verilator":
+        return []
+
+    return [
+        "-Wno-fatal",
+        "-Wno-WIDTH",
+        "-Wno-CASEINCOMPLETE",
+    ]
 
 
 @pytest.mark.parametrize("pcie_offset", list(range(4))+list(range(4096-4, 4096)))
@@ -338,7 +356,7 @@ def test_dma_if_pcie_rd(request, pcie_data_width, pcie_offset):
 
     extra_env = {f'PARAM_{k}': str(v) for k, v in parameters.items()}
 
-    extra_env['PCIE_OFFSET'] = str(pcie_offset)
+    extra_env['PCIE_OFFSETS'] = str(pcie_offset)
 
     sim_build = os.path.join(tests_dir, "sim_build",
         request.node.name.replace('[', '-').replace(']', ''))
@@ -346,6 +364,63 @@ def test_dma_if_pcie_rd(request, pcie_data_width, pcie_offset):
     cocotb_test.simulator.run(
         python_search=[tests_dir],
         verilog_sources=verilog_sources,
+        verilog_compile_args=get_verilator_compile_args(),
+        toplevel=toplevel,
+        module=module,
+        parameters=parameters,
+        sim_build=sim_build,
+        extra_env=extra_env,
+    )
+
+
+@pytest.mark.parametrize("pcie_offset", [4093, 4095])
+def test_dma_if_pcie_rd_multi_beat_alignment(request, pcie_offset):
+    dut = "dma_if_pcie_rd"
+    module = os.path.splitext(os.path.basename(__file__))[0]
+    toplevel = dut
+
+    verilog_sources = [
+        os.path.join(rtl_dir, f"{dut}.v"),
+    ]
+
+    parameters = {}
+
+    parameters['TLP_DATA_WIDTH'] = 256
+    parameters['TLP_HDR_WIDTH'] = 128
+    parameters['TLP_SEG_COUNT'] = 1
+    parameters['TX_SEQ_NUM_COUNT'] = 1
+    parameters['TX_SEQ_NUM_WIDTH'] = 6
+    parameters['TX_SEQ_NUM_ENABLE'] = 1
+    parameters['RAM_SEL_WIDTH'] = 2
+    parameters['RAM_ADDR_WIDTH'] = 16
+    parameters['RAM_SEG_COUNT'] = parameters['TLP_SEG_COUNT']*2
+    parameters['RAM_SEG_DATA_WIDTH'] = parameters['TLP_DATA_WIDTH']*2 // parameters['RAM_SEG_COUNT']
+    parameters['RAM_SEG_BE_WIDTH'] = parameters['RAM_SEG_DATA_WIDTH'] // 8
+    parameters['RAM_SEG_ADDR_WIDTH'] = parameters['RAM_ADDR_WIDTH'] - (parameters['RAM_SEG_COUNT']*parameters['RAM_SEG_BE_WIDTH']-1).bit_length()
+    parameters['PCIE_ADDR_WIDTH'] = 64
+    parameters['PCIE_TAG_COUNT'] = 256
+    parameters['LEN_WIDTH'] = 20
+    parameters['TAG_WIDTH'] = 8
+    parameters['OP_TABLE_SIZE'] = parameters['PCIE_TAG_COUNT']
+    parameters['TX_LIMIT'] = 2**(parameters['TX_SEQ_NUM_WIDTH']-1)
+    parameters['CPLH_FC_LIMIT'] = 512
+    parameters['CPLD_FC_LIMIT'] = parameters['CPLH_FC_LIMIT']*4
+    parameters['TLP_FORCE_64_BIT_ADDR'] = 0
+    parameters['CHECK_BUS_NUMBER'] = 0
+
+    extra_env = {f'PARAM_{k}': str(v) for k, v in parameters.items()}
+
+    extra_env['PCIE_OFFSETS'] = str(pcie_offset)
+    extra_env['TEST_LENGTHS'] = '33,64,65,96'
+    extra_env['RAM_OFFSETS'] = '0,1,31,32'
+
+    sim_build = os.path.join(tests_dir, "sim_build",
+        request.node.name.replace('[', '-').replace(']', ''))
+
+    cocotb_test.simulator.run(
+        python_search=[tests_dir],
+        verilog_sources=verilog_sources,
+        verilog_compile_args=get_verilator_compile_args(),
         toplevel=toplevel,
         module=module,
         parameters=parameters,
