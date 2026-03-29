@@ -120,6 +120,7 @@ module dma_if_pcie_us_wr #
     input  wire [PCIE_ADDR_WIDTH-1:0]           s_axis_write_desc_pcie_addr,
     input  wire [RAM_SEL_WIDTH-1:0]             s_axis_write_desc_ram_sel,
     input  wire [RAM_ADDR_WIDTH-1:0]            s_axis_write_desc_ram_addr,
+    input  wire                                 s_axis_write_desc_no_snoop,
     input  wire [LEN_WIDTH-1:0]                 s_axis_write_desc_len,
     input  wire [TAG_WIDTH-1:0]                 s_axis_write_desc_tag,
     input  wire                                 s_axis_write_desc_valid,
@@ -311,6 +312,7 @@ reg [LEN_WIDTH-1:0] op_count_reg = {LEN_WIDTH{1'b0}}, op_count_next;
 reg [LEN_WIDTH-1:0] tr_count_reg = {LEN_WIDTH{1'b0}}, tr_count_next;
 reg [12:0] tlp_count_reg = 13'd0, tlp_count_next;
 reg zero_len_reg = 1'b0, zero_len_next;
+reg no_snoop_reg = 1'b0, no_snoop_next;
 reg [TAG_WIDTH-1:0] tag_reg = {TAG_WIDTH{1'b0}}, tag_next;
 
 reg [PCIE_ADDR_WIDTH-1:0] read_pcie_addr_reg = {PCIE_ADDR_WIDTH{1'b0}}, read_pcie_addr_next;
@@ -330,6 +332,7 @@ reg [RAM_OFFSET_WIDTH-1:0] end_offset_reg = {RAM_OFFSET_WIDTH{1'b0}}, end_offset
 reg [PCIE_ADDR_WIDTH-1:0] tlp_addr_reg = {PCIE_ADDR_WIDTH{1'b0}}, tlp_addr_next;
 reg [11:0] tlp_len_reg = 12'd0, tlp_len_next;
 reg tlp_zero_len_reg = 1'b0, tlp_zero_len_next;
+reg tlp_no_snoop_reg = 1'b0, tlp_no_snoop_next;
 reg [RAM_OFFSET_WIDTH-1:0] offset_reg = {RAM_OFFSET_WIDTH{1'b0}}, offset_next;
 reg [9:0] dword_count_reg = 10'd0, dword_count_next;
 reg [SEG_COUNT-1:0] ram_mask_reg = {SEG_COUNT{1'b0}}, ram_mask_next;
@@ -428,6 +431,7 @@ reg [OP_TAG_WIDTH+1-1:0] op_table_start_ptr_reg = 0;
 reg [PCIE_ADDR_WIDTH-1:0] op_table_start_pcie_addr;
 reg [11:0] op_table_start_len;
 reg op_table_start_zero_len;
+reg op_table_start_no_snoop;
 reg [9:0] op_table_start_dword_len;
 reg [CYCLE_COUNT_WIDTH-1:0] op_table_start_cycle_count;
 reg [RAM_OFFSET_WIDTH-1:0] op_table_start_offset;
@@ -450,6 +454,8 @@ reg [11:0] op_table_len[2**OP_TAG_WIDTH-1:0];
 (* ram_style = "distributed", ramstyle = "no_rw_check, mlab" *)
 reg op_table_zero_len[2**OP_TAG_WIDTH-1:0];
 (* ram_style = "distributed", ramstyle = "no_rw_check, mlab" *)
+reg op_table_no_snoop[2**OP_TAG_WIDTH-1:0];
+(* ram_style = "distributed", ramstyle = "no_rw_check, mlab" *)
 reg [9:0] op_table_dword_len[2**OP_TAG_WIDTH-1:0];
 (* ram_style = "distributed", ramstyle = "no_rw_check, mlab" *)
 reg [CYCLE_COUNT_WIDTH-1:0] op_table_cycle_count[2**OP_TAG_WIDTH-1:0];
@@ -467,6 +473,7 @@ initial begin
         op_table_pcie_addr[i] = 0;
         op_table_len[i] = 0;
         op_table_zero_len[i] = 0;
+        op_table_no_snoop[i] = 0;
         op_table_dword_len[i] = 0;
         op_table_cycle_count[i] = 0;
         op_table_offset[i] = 0;
@@ -487,6 +494,7 @@ always @* begin
     tr_count_next = tr_count_reg;
     tlp_count_next = tlp_count_reg;
     zero_len_next = zero_len_reg;
+    no_snoop_next = no_snoop_reg;
     tag_next = tag_reg;
 
     read_cmd_pcie_addr_next = read_cmd_pcie_addr_reg;
@@ -500,6 +508,7 @@ always @* begin
     op_table_start_pcie_addr = pcie_addr_reg;
     op_table_start_len = tlp_count_reg;
     op_table_start_zero_len = zero_len_reg;
+    op_table_start_no_snoop = no_snoop_reg;
     op_table_start_dword_len = (tlp_count_reg + pcie_addr_reg[1:0] + 3) >> 2;
     op_table_start_cycle_count = 0;
     if (AXIS_PCIE_DATA_WIDTH >= 256) begin
@@ -522,6 +531,7 @@ always @* begin
             pcie_addr_next = s_axis_write_desc_pcie_addr;
             ram_sel_next = s_axis_write_desc_ram_sel;
             ram_addr_next = s_axis_write_desc_ram_addr;
+            no_snoop_next = s_axis_write_desc_no_snoop;
             if (s_axis_write_desc_len == 0) begin
                 // zero-length operation
                 op_count_next = 1;
@@ -583,6 +593,7 @@ always @* begin
                 op_table_start_pcie_addr = pcie_addr_reg;
                 op_table_start_len = tlp_count_reg;
                 op_table_start_zero_len = zero_len_reg;
+                op_table_start_no_snoop = no_snoop_reg;
                 op_table_start_dword_len = (tlp_count_reg + pcie_addr_reg[1:0] + 3) >> 2;
                 if (AXIS_PCIE_DATA_WIDTH >= 256) begin
                     op_table_start_offset = 16+pcie_addr_reg[1:0]-ram_addr_reg[RAM_OFFSET_WIDTH-1:0];
@@ -798,6 +809,7 @@ always @* begin
     tlp_addr_next = tlp_addr_reg;
     tlp_len_next = tlp_len_reg;
     tlp_zero_len_next = tlp_zero_len_reg;
+    tlp_no_snoop_next = tlp_no_snoop_reg;
     dword_count_next = dword_count_reg;
     offset_next = offset_reg;
     ram_mask_next = ram_mask_reg;
@@ -836,7 +848,8 @@ always @* begin
     tlp_header_data[119:104] = 16'd0; // completer ID
     tlp_header_data[120] = requester_id_enable; // requester ID enable
     tlp_header_data[123:121] = 3'b000; // traffic class
-    tlp_header_data[126:124] = 3'b000; // attr
+    tlp_header_data[126:125] = 2'b00; // attr[2:1]
+    tlp_header_data[124] = tlp_no_snoop_reg; // attr[0] - no snoop
     tlp_header_data[127] = 1'b0; // force ECRC
 
     if (AXIS_PCIE_DATA_WIDTH == 512) begin
@@ -1027,6 +1040,7 @@ always @* begin
             tlp_addr_next = op_table_pcie_addr[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
             tlp_len_next = op_table_len[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
             tlp_zero_len_next = op_table_zero_len[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
+            tlp_no_snoop_next = op_table_no_snoop[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
             dword_count_next = op_table_dword_len[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
             offset_next = op_table_offset[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
             cycle_count_next = op_table_cycle_count[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
@@ -1092,6 +1106,7 @@ always @* begin
                         tlp_addr_next = op_table_pcie_addr[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
                         tlp_len_next = op_table_len[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
                         tlp_zero_len_next = op_table_zero_len[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
+                        tlp_no_snoop_next = op_table_no_snoop[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
                         dword_count_next = op_table_dword_len[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
                         offset_next = op_table_offset[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
                         cycle_count_next = op_table_cycle_count[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
@@ -1158,6 +1173,7 @@ always @* begin
                     tlp_addr_next = op_table_pcie_addr[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
                     tlp_len_next = op_table_len[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
                     tlp_zero_len_next = op_table_zero_len[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
+                    tlp_no_snoop_next = op_table_no_snoop[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
                     dword_count_next = op_table_dword_len[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
                     offset_next = op_table_offset[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
                     cycle_count_next = op_table_cycle_count[op_table_tx_start_ptr_reg[OP_TAG_WIDTH-1:0]];
@@ -1212,6 +1228,7 @@ always @(posedge clk) begin
     tr_count_reg <= tr_count_next;
     tlp_count_reg <= tlp_count_next;
     zero_len_reg <= zero_len_next;
+    no_snoop_reg <= no_snoop_next;
     tag_reg <= tag_next;
 
     read_pcie_addr_reg <= read_pcie_addr_next;
@@ -1231,6 +1248,7 @@ always @(posedge clk) begin
     tlp_addr_reg <= tlp_addr_next;
     tlp_len_reg <= tlp_len_next;
     tlp_zero_len_reg <= tlp_zero_len_next;
+    tlp_no_snoop_reg <= tlp_no_snoop_next;
     dword_count_reg <= dword_count_next;
     offset_reg <= offset_next;
     ram_mask_reg <= ram_mask_next;
@@ -1304,6 +1322,7 @@ always @(posedge clk) begin
         op_table_pcie_addr[op_table_start_ptr_reg[OP_TAG_WIDTH-1:0]] <= op_table_start_pcie_addr;
         op_table_len[op_table_start_ptr_reg[OP_TAG_WIDTH-1:0]] <= op_table_start_len;
         op_table_zero_len[op_table_start_ptr_reg[OP_TAG_WIDTH-1:0]] <= op_table_start_zero_len;
+        op_table_no_snoop[op_table_start_ptr_reg[OP_TAG_WIDTH-1:0]] <= op_table_start_no_snoop;
         op_table_dword_len[op_table_start_ptr_reg[OP_TAG_WIDTH-1:0]] <= op_table_start_dword_len;
         op_table_cycle_count[op_table_start_ptr_reg[OP_TAG_WIDTH-1:0]] <= op_table_start_cycle_count;
         op_table_offset[op_table_start_ptr_reg[OP_TAG_WIDTH-1:0]] <= op_table_start_offset;

@@ -56,6 +56,10 @@ DescBus, DescTransaction, DescSource, DescSink, DescMonitor = define_stream("Des
     signals=["pcie_addr", "ram_addr", "ram_sel", "len", "tag", "valid", "ready"]
 )
 
+WriteDescBus, WriteDescTransaction, WriteDescSource, WriteDescSink, WriteDescMonitor = define_stream("WriteDesc",
+    signals=["pcie_addr", "ram_addr", "ram_sel", "no_snoop", "len", "tag", "valid", "ready"]
+)
+
 DescStatusBus, DescStatusTransaction, DescStatusSource, DescStatusSink, DescStatusMonitor = define_stream("DescStatus",
     signals=["tag", "error", "valid"]
 )
@@ -156,7 +160,7 @@ class TB(object):
         self.read_desc_source = DescSource(DescBus.from_prefix(dut, "s_axis_read_desc"), dut.clk, dut.rst)
         self.read_desc_status_sink = DescStatusSink(DescStatusBus.from_prefix(dut, "m_axis_read_desc_status"), dut.clk, dut.rst)
 
-        self.write_desc_source = DescSource(DescBus.from_prefix(dut, "s_axis_write_desc"), dut.clk, dut.rst)
+        self.write_desc_source = WriteDescSource(WriteDescBus.from_prefix(dut, "s_axis_write_desc"), dut.clk, dut.rst)
         self.write_desc_status_sink = DescStatusSink(DescStatusBus.from_prefix(dut, "m_axis_write_desc_status"), dut.clk, dut.rst)
 
         dut.requester_id.setimmediatevalue(0)
@@ -235,7 +239,7 @@ async def run_test_write(dut, idle_inserter=None, backpressure_inserter=None):
 
                 tb.log.debug("%s", tb.dma_ram.hexdump_str((ram_addr & ~0xf)-16, (((ram_addr & 0xf)+length-1) & ~0xf)+48, prefix="RAM "))
 
-                desc = DescTransaction(pcie_addr=mem_base+pcie_addr, ram_addr=ram_addr, len=len(test_data), tag=cur_tag)
+                desc = WriteDescTransaction(pcie_addr=mem_base+pcie_addr, ram_addr=ram_addr, no_snoop=0, len=len(test_data), tag=cur_tag)
                 await tb.write_desc_source.send(desc)
 
                 status = await tb.write_desc_status_sink.recv()

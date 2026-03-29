@@ -74,6 +74,7 @@ module dma_if_desc_mux #
     output wire [RAM_ADDR_WIDTH-1:0]                  m_axis_desc_ram_addr,
     output wire [IMM_WIDTH-1:0]                       m_axis_desc_imm,
     output wire                                       m_axis_desc_imm_en,
+    output wire                                       m_axis_desc_no_snoop,
     output wire [LEN_WIDTH-1:0]                       m_axis_desc_len,
     output wire [M_TAG_WIDTH-1:0]                     m_axis_desc_tag,
     output wire                                       m_axis_desc_valid,
@@ -94,6 +95,7 @@ module dma_if_desc_mux #
     input  wire [PORTS*RAM_ADDR_WIDTH-1:0]            s_axis_desc_ram_addr,
     input  wire [PORTS*IMM_WIDTH-1:0]                 s_axis_desc_imm,
     input  wire [PORTS-1:0]                           s_axis_desc_imm_en,
+    input  wire [PORTS-1:0]                           s_axis_desc_no_snoop,
     input  wire [PORTS*LEN_WIDTH-1:0]                 s_axis_desc_len,
     input  wire [PORTS*S_TAG_WIDTH-1:0]               s_axis_desc_tag,
     input  wire [PORTS-1:0]                           s_axis_desc_valid,
@@ -146,6 +148,7 @@ reg [PORTS*S_RAM_SEL_WIDTH-1:0] s_axis_desc_ram_sel_reg = 0;
 reg [PORTS*RAM_ADDR_WIDTH-1:0]  s_axis_desc_ram_addr_reg = 0;
 reg [PORTS*IMM_WIDTH-1:0]       s_axis_desc_imm_reg = 0;
 reg [PORTS-1:0]                 s_axis_desc_imm_en_reg = 0;
+reg [PORTS-1:0]                 s_axis_desc_no_snoop_reg = 0;
 reg [PORTS*LEN_WIDTH-1:0]       s_axis_desc_len_reg = 0;
 reg [PORTS*S_TAG_WIDTH-1:0]     s_axis_desc_tag_reg = 0;
 reg [PORTS-1:0]                 s_axis_desc_valid_reg = 0;
@@ -156,6 +159,7 @@ reg  [M_RAM_SEL_WIDTH-1:0] m_axis_desc_ram_sel_int;
 reg  [RAM_ADDR_WIDTH-1:0]  m_axis_desc_ram_addr_int;
 reg  [IMM_WIDTH-1:0]       m_axis_desc_imm_int;
 reg                        m_axis_desc_imm_en_int;
+reg                        m_axis_desc_no_snoop_int;
 reg  [LEN_WIDTH-1:0]       m_axis_desc_len_int;
 reg  [M_TAG_WIDTH-1:0]     m_axis_desc_tag_int;
 reg                        m_axis_desc_valid_int;
@@ -170,6 +174,7 @@ wire [S_RAM_SEL_WIDTH-1:0] current_s_desc_ram_sel   = s_axis_desc_ram_sel_reg[gr
 wire [RAM_ADDR_WIDTH-1:0]  current_s_desc_ram_addr  = s_axis_desc_ram_addr_reg[grant_encoded*RAM_ADDR_WIDTH +: RAM_ADDR_WIDTH];
 wire [IMM_WIDTH-1:0]       current_s_desc_imm       = s_axis_desc_imm_reg[grant_encoded*IMM_WIDTH +: IMM_WIDTH];
 wire                       current_s_desc_imm_en    = s_axis_desc_imm_en_reg[grant_encoded];
+wire                       current_s_desc_no_snoop  = s_axis_desc_no_snoop_reg[grant_encoded];
 wire [LEN_WIDTH-1:0]       current_s_desc_len       = s_axis_desc_len_reg[grant_encoded*LEN_WIDTH +: LEN_WIDTH];
 wire [S_TAG_WIDTH-1:0]     current_s_desc_tag       = s_axis_desc_tag_reg[grant_encoded*S_TAG_WIDTH +: S_TAG_WIDTH];
 wire                       current_s_desc_valid     = s_axis_desc_valid_reg[grant_encoded];
@@ -206,6 +211,7 @@ always @* begin
     m_axis_desc_ram_addr_int  = current_s_desc_ram_addr;
     m_axis_desc_imm_int       = current_s_desc_imm;
     m_axis_desc_imm_en_int    = current_s_desc_imm_en;
+    m_axis_desc_no_snoop_int  = current_s_desc_no_snoop;
     m_axis_desc_len_int       = current_s_desc_len;
     m_axis_desc_tag_int       = current_s_desc_tag;
     if (PORTS > 1) begin
@@ -225,6 +231,7 @@ always @(posedge clk) begin
             s_axis_desc_ram_addr_reg[i*RAM_ADDR_WIDTH +: RAM_ADDR_WIDTH] <= s_axis_desc_ram_addr[i*RAM_ADDR_WIDTH +: RAM_ADDR_WIDTH];
             s_axis_desc_imm_reg[i*IMM_WIDTH +: IMM_WIDTH] <= s_axis_desc_imm[i*IMM_WIDTH +: IMM_WIDTH];
             s_axis_desc_imm_en_reg[i] <= s_axis_desc_imm_en[i];
+            s_axis_desc_no_snoop_reg[i] <= s_axis_desc_no_snoop[i];
             s_axis_desc_len_reg[i*LEN_WIDTH +: LEN_WIDTH] <= s_axis_desc_len[i*LEN_WIDTH +: LEN_WIDTH];
             s_axis_desc_tag_reg[i*S_TAG_WIDTH +: S_TAG_WIDTH] <= s_axis_desc_tag[i*S_TAG_WIDTH +: S_TAG_WIDTH];
             s_axis_desc_valid_reg[i] <= s_axis_desc_valid[i];
@@ -242,6 +249,7 @@ reg [M_RAM_SEL_WIDTH-1:0] m_axis_desc_ram_sel_reg   = {M_RAM_SEL_WIDTH{1'b0}};
 reg [RAM_ADDR_WIDTH-1:0]  m_axis_desc_ram_addr_reg  = {RAM_ADDR_WIDTH{1'b0}};
 reg [IMM_WIDTH-1:0]       m_axis_desc_imm_reg       = {IMM_WIDTH{1'b0}};
 reg                       m_axis_desc_imm_en_reg    = 1'b0;
+reg                       m_axis_desc_no_snoop_reg  = 1'b0;
 reg [LEN_WIDTH-1:0]       m_axis_desc_len_reg       = {LEN_WIDTH{1'b0}};
 reg [M_TAG_WIDTH-1:0]     m_axis_desc_tag_reg       = {M_TAG_WIDTH{1'b0}};
 reg                       m_axis_desc_valid_reg     = 1'b0, m_axis_desc_valid_next;
@@ -251,6 +259,7 @@ reg [M_RAM_SEL_WIDTH-1:0] temp_m_axis_desc_ram_sel_reg   = {M_RAM_SEL_WIDTH{1'b0
 reg [RAM_ADDR_WIDTH-1:0]  temp_m_axis_desc_ram_addr_reg  = {RAM_ADDR_WIDTH{1'b0}};
 reg [IMM_WIDTH-1:0]       temp_m_axis_desc_imm_reg       = {IMM_WIDTH{1'b0}};
 reg                       temp_m_axis_desc_imm_en_reg    = 1'b0;
+reg                       temp_m_axis_desc_no_snoop_reg  = 1'b0;
 reg [LEN_WIDTH-1:0]       temp_m_axis_desc_len_reg       = {LEN_WIDTH{1'b0}};
 reg [M_TAG_WIDTH-1:0]     temp_m_axis_desc_tag_reg       = {M_TAG_WIDTH{1'b0}};
 reg                       temp_m_axis_desc_valid_reg     = 1'b0, temp_m_axis_desc_valid_next;
@@ -265,6 +274,7 @@ assign m_axis_desc_ram_sel   = m_axis_desc_ram_sel_reg;
 assign m_axis_desc_ram_addr  = m_axis_desc_ram_addr_reg;
 assign m_axis_desc_imm       = IMM_ENABLE ? m_axis_desc_imm_reg : {IMM_WIDTH{1'b0}};
 assign m_axis_desc_imm_en    = IMM_ENABLE ? m_axis_desc_imm_en_reg : 1'b0;
+assign m_axis_desc_no_snoop  = m_axis_desc_no_snoop_reg;
 assign m_axis_desc_len       = m_axis_desc_len_reg;
 assign m_axis_desc_tag       = m_axis_desc_tag_reg;
 assign m_axis_desc_valid     = m_axis_desc_valid_reg;
@@ -312,6 +322,7 @@ always @(posedge clk) begin
         m_axis_desc_ram_addr_reg <= m_axis_desc_ram_addr_int;
         m_axis_desc_imm_reg <= m_axis_desc_imm_int;
         m_axis_desc_imm_en_reg <= m_axis_desc_imm_en_int;
+        m_axis_desc_no_snoop_reg <= m_axis_desc_no_snoop_int;
         m_axis_desc_len_reg <= m_axis_desc_len_int;
         m_axis_desc_tag_reg <= m_axis_desc_tag_int;
     end else if (store_axis_temp_to_output) begin
@@ -320,6 +331,7 @@ always @(posedge clk) begin
         m_axis_desc_ram_addr_reg <= temp_m_axis_desc_ram_addr_reg;
         m_axis_desc_imm_reg <= temp_m_axis_desc_imm_reg;
         m_axis_desc_imm_en_reg <= temp_m_axis_desc_imm_en_reg;
+        m_axis_desc_no_snoop_reg <= temp_m_axis_desc_no_snoop_reg;
         m_axis_desc_len_reg <= temp_m_axis_desc_len_reg;
         m_axis_desc_tag_reg <= temp_m_axis_desc_tag_reg;
     end
@@ -330,6 +342,7 @@ always @(posedge clk) begin
         temp_m_axis_desc_ram_addr_reg <= m_axis_desc_ram_addr_int;
         temp_m_axis_desc_imm_reg <= m_axis_desc_imm_int;
         temp_m_axis_desc_imm_en_reg <= m_axis_desc_imm_en_int;
+        temp_m_axis_desc_no_snoop_reg <= m_axis_desc_no_snoop_int;
         temp_m_axis_desc_len_reg <= m_axis_desc_len_int;
         temp_m_axis_desc_tag_reg <= m_axis_desc_tag_int;
     end

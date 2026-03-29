@@ -40,7 +40,6 @@ srcs.append("../rtl/%s.v" % module)
 srcs.append("../rtl/dma_if_pcie_us_rd.v")
 srcs.append("../rtl/dma_if_pcie_us_wr.v")
 srcs.append("../rtl/priority_encoder.v")
-srcs.append("../rtl/pcie_tag_manager.v")
 srcs.append("%s.v" % testbench)
 
 src = ' '.join(srcs)
@@ -102,6 +101,7 @@ def bench():
     s_axis_write_desc_pcie_addr = Signal(intbv(0)[PCIE_ADDR_WIDTH:])
     s_axis_write_desc_ram_sel = Signal(intbv(0)[RAM_SEL_WIDTH:])
     s_axis_write_desc_ram_addr = Signal(intbv(0)[RAM_ADDR_WIDTH:])
+    s_axis_write_desc_no_snoop = Signal(bool(0))
     s_axis_write_desc_len = Signal(intbv(0)[LEN_WIDTH:])
     s_axis_write_desc_tag = Signal(intbv(0)[TAG_WIDTH:])
     s_axis_write_desc_valid = Signal(bool(0))
@@ -202,7 +202,7 @@ def bench():
     write_desc_source_logic = write_desc_source.create_logic(
         user_clk,
         user_reset,
-        tdata=(s_axis_write_desc_pcie_addr, s_axis_write_desc_ram_sel, s_axis_write_desc_ram_addr, s_axis_write_desc_len, s_axis_write_desc_tag),
+        tdata=(s_axis_write_desc_pcie_addr, s_axis_write_desc_ram_sel, s_axis_write_desc_ram_addr, s_axis_write_desc_no_snoop, s_axis_write_desc_len, s_axis_write_desc_tag),
         tvalid=s_axis_write_desc_valid,
         tready=s_axis_write_desc_ready,
         name='write_desc_source'
@@ -365,6 +365,7 @@ def bench():
         s_axis_write_desc_pcie_addr=s_axis_write_desc_pcie_addr,
         s_axis_write_desc_ram_sel=s_axis_write_desc_ram_sel,
         s_axis_write_desc_ram_addr=s_axis_write_desc_ram_addr,
+        s_axis_write_desc_no_snoop=s_axis_write_desc_no_snoop,
         s_axis_write_desc_len=s_axis_write_desc_len,
         s_axis_write_desc_tag=s_axis_write_desc_tag,
         s_axis_write_desc_valid=s_axis_write_desc_valid,
@@ -448,7 +449,7 @@ def bench():
         for i in range(0, len(data), 16):
             print(" ".join(("{:02x}".format(c) for c in bytearray(data[i:i+16]))))
 
-        write_desc_source.send([(mem_base+pcie_addr, 0, ram_addr, len(test_data), cur_tag)])
+        write_desc_source.send([(mem_base+pcie_addr, 0, ram_addr, 0, len(test_data), cur_tag)])
 
         yield write_desc_status_sink.wait(1000)
         yield delay(50)

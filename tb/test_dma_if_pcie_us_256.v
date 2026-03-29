@@ -84,6 +84,7 @@ reg s_axis_read_desc_valid = 0;
 reg [PCIE_ADDR_WIDTH-1:0] s_axis_write_desc_pcie_addr = 0;
 reg [RAM_SEL_WIDTH-1:0] s_axis_write_desc_ram_sel = 0;
 reg [RAM_ADDR_WIDTH-1:0] s_axis_write_desc_ram_addr = 0;
+reg s_axis_write_desc_no_snoop = 0;
 reg [LEN_WIDTH-1:0] s_axis_write_desc_len = 0;
 reg [TAG_WIDTH-1:0] s_axis_write_desc_tag = 0;
 reg s_axis_write_desc_valid = 0;
@@ -152,6 +153,7 @@ initial begin
         s_axis_write_desc_pcie_addr,
         s_axis_write_desc_ram_sel,
         s_axis_write_desc_ram_addr,
+        s_axis_write_desc_no_snoop,
         s_axis_write_desc_len,
         s_axis_write_desc_tag,
         s_axis_write_desc_valid,
@@ -213,8 +215,6 @@ dma_if_pcie_us #(
     .RAM_ADDR_WIDTH(RAM_ADDR_WIDTH),
     .PCIE_ADDR_WIDTH(PCIE_ADDR_WIDTH),
     .PCIE_TAG_COUNT(PCIE_TAG_COUNT),
-    .PCIE_TAG_WIDTH(PCIE_TAG_WIDTH),
-    .PCIE_EXT_TAG_ENABLE(PCIE_EXT_TAG_ENABLE),
     .LEN_WIDTH(LEN_WIDTH),
     .TAG_WIDTH(TAG_WIDTH),
     .READ_OP_TABLE_SIZE(READ_OP_TABLE_SIZE),
@@ -258,6 +258,7 @@ UUT (
     .s_axis_write_desc_pcie_addr(s_axis_write_desc_pcie_addr),
     .s_axis_write_desc_ram_sel(s_axis_write_desc_ram_sel),
     .s_axis_write_desc_ram_addr(s_axis_write_desc_ram_addr),
+    .s_axis_write_desc_no_snoop(s_axis_write_desc_no_snoop),
     .s_axis_write_desc_len(s_axis_write_desc_len),
     .s_axis_write_desc_tag(s_axis_write_desc_tag),
     .s_axis_write_desc_valid(s_axis_write_desc_valid),

@@ -53,7 +53,7 @@ except ImportError:
         del sys.path[0]
 
 DescBus, DescTransaction, DescSource, DescSink, DescMonitor = define_stream("Desc",
-    signals=["pcie_addr", "ram_addr", "ram_sel", "imm", "imm_en", "len", "tag", "valid", "ready"]
+    signals=["pcie_addr", "ram_addr", "ram_sel", "imm", "imm_en", "no_snoop", "len", "tag", "valid", "ready"]
 )
 
 DescStatusBus, DescStatusTransaction, DescStatusSource, DescStatusSink, DescStatusMonitor = define_stream("DescStatus",
@@ -247,6 +247,50 @@ async def run_test_write_imm(dut, idle_inserter=None, backpressure_inserter=None
     await RisingEdge(dut.clk)
 
 
+async def run_test_write_no_snoop(dut, no_snoop=0):
+
+    tb = TB(dut)
+
+    await tb.cycle_reset()
+
+    await tb.rc.enumerate()
+
+    dev = tb.rc.find_device(tb.dev.functions[0].pcie_id)
+    await dev.enable_device()
+    await dev.set_master()
+
+    mem = tb.rc.mem_pool.alloc_region(16*1024*1024)
+    mem_base = mem.get_absolute_address(0)
+
+    tb.dut.enable <= 1
+
+    test_data = bytearray(range(16))
+    pcie_addr = 0x1000
+    ram_addr = 0x1000
+
+    tb.dma_ram.write(ram_addr, test_data)
+
+    desc = DescTransaction(
+        pcie_addr=mem_base+pcie_addr,
+        ram_addr=ram_addr,
+        ram_sel=0,
+        len=len(test_data),
+        tag=1,
+        no_snoop=no_snoop,
+    )
+    await tb.write_desc_source.send(desc)
+
+    while True:
+        await RisingEdge(dut.clk)
+        if dut.tx_wr_req_tlp_valid.value and dut.tx_wr_req_tlp_ready.value and dut.tx_wr_req_tlp_sop.value:
+            hdr = int(dut.tx_wr_req_tlp_hdr.value)
+            assert (hdr >> 108) & 1 == no_snoop
+            break
+
+    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk)
+
+
 def cycle_pause():
     return itertools.cycle([1, 1, 1, 0])
 
@@ -259,6 +303,10 @@ if cocotb.SIM_NAME:
 
     factory = TestFactory(run_test_write_imm)
     factory.add_option(("idle_inserter", "backpressure_inserter"), [(None, None), (cycle_pause, cycle_pause)])
+    factory.generate_tests()
+
+    factory = TestFactory(run_test_write_no_snoop)
+    factory.add_option("no_snoop", [0, 1])
     factory.generate_tests()
 
 
