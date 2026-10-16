@@ -84,7 +84,9 @@ module pcie_us_if #
     // enable MSI support
     parameter MSI_ENABLE = 0,
     // MSI vector count
-    parameter MSI_COUNT = 32
+    parameter MSI_COUNT = 32,
+    // Posted header credits held back from write requests
+    parameter TX_FC_PH_RESERVE = 8
 )
 (
     input  wire                                          clk,
@@ -354,7 +356,8 @@ pcie_us_if_rq #(
     .TLP_HDR_WIDTH(TLP_HDR_WIDTH),
     .TLP_SEG_COUNT(TLP_SEG_COUNT),
     .TX_SEQ_NUM_COUNT(TX_SEQ_NUM_COUNT),
-    .TX_SEQ_NUM_WIDTH(TX_SEQ_NUM_WIDTH)
+    .TX_SEQ_NUM_WIDTH(TX_SEQ_NUM_WIDTH),
+    .TX_FC_PH_RESERVE(TX_FC_PH_RESERVE)
 )
 pcie_us_if_rq_inst
 (

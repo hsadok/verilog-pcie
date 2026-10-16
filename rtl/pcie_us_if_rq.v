@@ -54,7 +54,10 @@ module pcie_us_if_rq #
     // TX sequence number count
     parameter TX_SEQ_NUM_COUNT = AXIS_PCIE_DATA_WIDTH < 512 ? 1 : 2,
     // TX sequence number width
-    parameter TX_SEQ_NUM_WIDTH = RQ_SEQ_NUM_WIDTH-1
+    parameter TX_SEQ_NUM_WIDTH = RQ_SEQ_NUM_WIDTH-1,
+    // Posted header credits held back from write requests (lets read
+    // requests through when posted credits run low)
+    parameter TX_FC_PH_RESERVE = 8
 )
 (
     input  wire                                          clk,
@@ -869,7 +872,7 @@ end
 
 always @(posedge clk) begin
     max_payload_size_fc_reg <= 9'd8 << (max_payload_size > 5 ? 5 : max_payload_size);
-    have_p_credit_reg <= (tx_fc_ph_av > 8) && (tx_fc_pd_av > (max_payload_size_fc_reg << 1));
+    have_p_credit_reg <= (tx_fc_ph_av > TX_FC_PH_RESERVE) && (tx_fc_pd_av > (max_payload_size_fc_reg << 1));
     have_np_credit_reg <= tx_fc_nph_av > 8;
 
     frame_reg <= frame_next;
