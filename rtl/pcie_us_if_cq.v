@@ -268,7 +268,11 @@ always @* begin
     if (CQ_STRADDLE && AXIS_PCIE_DATA_WIDTH >= 512) begin
         cq_data = s_axis_cq_tdata;
         cq_strb = 0;
-        cq_hdr_be = {s_axis_cq_tuser[15:12], s_axis_cq_tuser[7:4], s_axis_cq_tuser[11:8], s_axis_cq_tuser[3:0]};
+        if (s_axis_cq_tuser[80] && s_axis_cq_tuser[83:82] == 2'd0) begin
+            cq_hdr_be = {s_axis_cq_tuser[15:12], s_axis_cq_tuser[7:4], s_axis_cq_tuser[11:8], s_axis_cq_tuser[3:0]};
+        end else begin
+            cq_hdr_be = {s_axis_cq_tuser[11:8], s_axis_cq_tuser[3:0], s_axis_cq_tuser[11:8], s_axis_cq_tuser[3:0]};
+        end
         cq_valid = 0;
         cq_strb_sop = 0;
         cq_strb_eop = 0;

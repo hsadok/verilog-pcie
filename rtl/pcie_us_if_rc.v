@@ -305,7 +305,7 @@ always @* begin
                 end
             end
         end
-        valid = 1;
+        valid = rc_frame_reg;
         for (lane = 0; lane < TLP_STRB_WIDTH; lane = lane + 1) begin
             if (rc_strb_sop[lane]) begin
                 valid = 1;
