@@ -280,6 +280,13 @@ async def run_test_write_no_snoop(dut, no_snoop=0):
             assert (int(dut.tlp_header_data_reg.value) >> 124) & 1 == no_snoop
             break
 
+    # let the write finish, or its payload beats leak into the next test
+    status = await tb.write_desc_status_sink.recv()
+    await Timer(100, 'ns')
+    assert int(status.tag) == 1
+    assert int(status.error) == 0
+    assert mem[pcie_addr:pcie_addr+len(test_data)] == test_data
+
     await RisingEdge(dut.clk)
     await RisingEdge(dut.clk)
 
